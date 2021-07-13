@@ -1,19 +1,13 @@
-# Automatically build the project and run any configured tests for every push
-# and submitted pull request. This can help catch issues that only occur on
-# certain platforms or Java versions, and provides a first line of defence
-# against bad commits.
 
-name: build
+# This workflow will build a Java project with Gradle. This provides a first line of defence against bad commits. For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-gradle
+name: Build
 on: [ pull_request, push ]
 jobs:
   build:
     strategy:
       matrix:
-        # Use these Java versions
-        java: [
-            16    # Minimum supported by Minecraft
-        ]
-        # and run on both Linux and Windows
+        java: [ 16 ]
+        # run on both Linux and Windows
         os: [ ubuntu-latest, windows-latest ]
     runs-on: ${{ matrix.os }}
     steps:
@@ -24,7 +18,7 @@ jobs:
       with:
         java-version: ${{ matrix.java }}
         distribution: 'adopt'
-    - name: Build
+    - name: Build with Gradle
       run: ./gradlew build
     - name: Capture build artifacts
       if: ${{ runner.os == 'Linux' && matrix.java == '16' }} # Only upload artifacts built from latest java on one OS
