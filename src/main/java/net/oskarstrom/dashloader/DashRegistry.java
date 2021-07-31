@@ -1,404 +1,288 @@
 package net.oskarstrom.dashloader;
 
-import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.font.Font;
 import net.minecraft.client.render.model.BakedModel;
+import net.minecraft.client.render.model.BakedQuad;
 import net.minecraft.client.render.model.json.MultipartModelSelector;
 import net.minecraft.client.texture.NativeImage;
 import net.minecraft.client.texture.Sprite;
-import net.minecraft.client.util.ModelIdentifier;
 import net.minecraft.state.StateManager;
 import net.minecraft.state.property.Property;
 import net.minecraft.util.Identifier;
-import net.oskarstrom.dashloader.api.FactoryConstructor;
-import net.oskarstrom.dashloader.api.enums.FactoryType;
+import net.oskarstrom.dashloader.api.DashDataClass;
+import net.oskarstrom.dashloader.api.enums.DashDataType;
 import net.oskarstrom.dashloader.blockstate.DashBlockState;
 import net.oskarstrom.dashloader.blockstate.property.DashProperty;
 import net.oskarstrom.dashloader.blockstate.property.value.DashPropertyValue;
 import net.oskarstrom.dashloader.data.DashID;
 import net.oskarstrom.dashloader.data.DashIdentifier;
-import net.oskarstrom.dashloader.data.DashRegistryData;
-import net.oskarstrom.dashloader.data.registry.*;
-import net.oskarstrom.dashloader.data.serialization.Pointer2ObjectMap;
+import net.oskarstrom.dashloader.data.registry.storage.AbstractRegistryStorage;
+import net.oskarstrom.dashloader.data.registry.storage.AdvancedRegistryStorage;
+import net.oskarstrom.dashloader.data.registry.storage.FactoryRegistryStorage;
+import net.oskarstrom.dashloader.data.registry.storage.SimpleRegistryStorage;
+import net.oskarstrom.dashloader.data.registry.storage.impl.ModelFactoryRegistryStorage;
+import net.oskarstrom.dashloader.data.registry.storage.impl.PredicateFactoryRegistryStorage;
+import net.oskarstrom.dashloader.data.registry.storage.impl.PropertyValueFactoryRegistryStorage;
 import net.oskarstrom.dashloader.font.DashFont;
 import net.oskarstrom.dashloader.image.DashImage;
 import net.oskarstrom.dashloader.image.DashSprite;
-import net.oskarstrom.dashloader.model.DashModel;
-import net.oskarstrom.dashloader.model.DashModelIdentifier;
-import net.oskarstrom.dashloader.model.predicates.DashPredicate;
-import net.oskarstrom.dashloader.model.predicates.DashStaticPredicate;
+import net.oskarstrom.dashloader.model.components.DashBakedQuad;
 import net.oskarstrom.dashloader.util.ThreadHelper;
 import org.apache.commons.lang3.tuple.Pair;
-import org.apache.commons.lang3.tuple.Triple;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 public class DashRegistry {
 
 
-    private static int totalTasks = 6;
-    private static int tasksDone = 0;
-    private final Map<Integer, DashModel> models;
-    public Map<Class<?>, FactoryType> apiFailed = new ConcurrentHashMap<>();
-    public Int2ObjectMap<BlockState> blockstatesOut;
-    public Int2ObjectMap<Predicate<BlockState>> predicateOut;
-    public Int2ObjectMap<Identifier> identifiersOut;
-    public Int2ObjectMap<BakedModel> modelsOut;
-    public Int2ObjectMap<Sprite> spritesOut;
-    public Int2ObjectMap<Font> fontsOut;
-    public Int2ObjectMap<NativeImage> imagesOut;
-    public Int2ObjectMap<Property<?>> propertiesOut;
-    public Int2ObjectMap<Comparable<?>> propertyValuesOut;
-    DashLoader loader;
-    private Int2ObjectMap<DashBlockState> blockstates;
-    private Int2ObjectMap<DashSprite> sprites;
-    private Int2ObjectMap<DashID> identifiers;
-    private Int2ObjectMap<DashFont> fonts;
-    private Int2ObjectMap<DashImage> images;
-    private Int2ObjectMap<DashPredicate> predicates;
-    private Int2ObjectMap<DashProperty> properties;
-    private Int2ObjectMap<DashPropertyValue> propertyValues;
-
-    private List<Int2ObjectMap<DashModel>> modelsToDeserialize;
+	private static int totalTasks = 6;
+	private static int tasksDone = 0;
+	public final SimpleRegistryStorage<Identifier, DashID> identifiers = new SimpleRegistryStorage<>(this, "Identifier", DashIdentifier::createIdentifier);
+	public final SimpleRegistryStorage<NativeImage, DashImage> images = new SimpleRegistryStorage<>(this, "NativeImage", DashImage::new);
+	public final AdvancedRegistryStorage<BlockState, DashBlockState> blockstates = new AdvancedRegistryStorage<>(this, "BlockState", DashBlockState::new);
+	public final AdvancedRegistryStorage<Sprite, DashSprite> sprites = new AdvancedRegistryStorage<>(this, "Sprite", DashSprite::new);
+	public final AdvancedRegistryStorage<BakedQuad, DashBakedQuad> bakedQuads = new AdvancedRegistryStorage<>(this, "BakedQuad", DashBakedQuad::new);
+	public final FactoryRegistryStorage<Font, DashFont> fonts = new FactoryRegistryStorage<>(this, DashDataType.FONT);
+	public final FactoryRegistryStorage<Property<?>, DashProperty> properties = new FactoryRegistryStorage<>(this, DashDataType.PROPERTY);
+	public final FactoryRegistryStorage<Comparable<?>, DashPropertyValue> propertyValues = new PropertyValueFactoryRegistryStorage(this, DashDataType.PROPERTY_VALUE);
+	public final PredicateFactoryRegistryStorage predicates = new PredicateFactoryRegistryStorage(this, DashDataType.PREDICATE);
+	public final ModelFactoryRegistryStorage models = new ModelFactoryRegistryStorage(this, DashDataType.MODEL);
+	public final List<AbstractRegistryStorage<?, ?>> registries = new ArrayList<>();
+	public final List<DashDataClass> dataClasses = new ArrayList<>();
+	public Map<Class<?>, DashDataType> apiFailed = new ConcurrentHashMap<>();
 
 
-    public DashRegistry(Int2ObjectMap<DashBlockState> blockstates,
-                        Int2ObjectMap<DashSprite> sprites,
-                        Int2ObjectMap<DashID> identifiers,
-                        Int2ObjectMap<DashFont> fonts,
-                        Int2ObjectMap<DashImage> images,
-                        Int2ObjectMap<DashPredicate> predicates,
-                        Int2ObjectMap<DashProperty> properties,
-                        Int2ObjectMap<DashPropertyValue> propertyValues,
-                        Map<Integer, DashModel> models
-    ) {
-        this.blockstates = blockstates;
-        this.sprites = sprites;
-        this.identifiers = identifiers;
-        this.models = models;
-        this.fonts = fonts;
-        this.images = images;
-        this.predicates = predicates;
-        this.properties = properties;
-        this.propertyValues = propertyValues;
-    }
+	public DashRegistry() {
+		registries.add(identifiers);
+		registries.add(images);
+		registries.add(properties);
+		registries.add(propertyValues);
+		registries.add(blockstates);
+		registries.add(predicates);
+		registries.add(sprites);
+		registries.add(bakedQuads);
+		registries.add(fonts);
+		registries.add(models);
+	}
 
-    public DashRegistry(DashLoader loader) {
-        blockstates = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        sprites = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        identifiers = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        models = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        fonts = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        predicates = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        images = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        properties = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        propertyValues = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
-        modelsToDeserialize = new ArrayList<>();
-        this.loader = loader;
-    }
+	/*
+		Undashing everything (converting DashObjects to Minecraft Objects)
+		 */
+	public void toUndash() {
+		Logger logger = LogManager.getLogger();
+		try {
+			tasksDone = 0;
+			totalTasks = registries.size() + 1;
+			dataClasses.forEach(dataClass -> dataClass.reload(this));
+			registries.forEach(abstractRegistryStorage -> undashTask(abstractRegistryStorage, logger));
+			dataClasses.forEach(dataClass -> dataClass.apply(this));
+			log(logger, "Applying Model Overrides");
+			models.getModelsToDeserialize().forEach(modelcategory -> ThreadHelper.applyExec(modelcategory, dashModel -> dashModel.apply(this)));
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
 
-    public Triple<DashRegistryData, RegistryImageData, RegistryModelData> createData() {
-        return Triple.of(
-                new DashRegistryData(
-                        new RegistryBlockStateData(new Pointer2ObjectMap<>(blockstates)),
-                        new RegistryFontData(new Pointer2ObjectMap<>(fonts)),
-                        new RegistryIdentifierData(new Pointer2ObjectMap<>(identifiers)),
-                        new RegistryPropertyData(new Pointer2ObjectMap<>(properties)),
-                        new RegistryPropertyValueData(new Pointer2ObjectMap<>(propertyValues)),
-                        new RegistrySpriteData(new Pointer2ObjectMap<>(sprites)),
-                        new RegistryPredicateData(new Pointer2ObjectMap<>(predicates))
-                ),
-                new RegistryImageData(new Pointer2ObjectMap<>(images)),
-                getModels());
-    }
+	private <D extends Dashable<O>, O> void undashTask(AbstractRegistryStorage<O, D> storage, Logger logger) {
+		log(logger, "Loading {} {}", storage.getSize(), storage.toString());
+		storage.toUndash(logger);
+	}
 
-    public void loadData(DashRegistryData registryData) {
-        blockstates = registryData.blockStateRegistryData.toUndash();
-        sprites = registryData.spriteRegistryData.toUndash();
-        fonts = registryData.fontRegistryData.toUndash();
-        predicates = registryData.predicateRegistryData.toUndash();
-        properties = registryData.propertyRegistryData.toUndash();
-        propertyValues = registryData.propertyValueRegistryData.toUndash();
-        identifiers = registryData.identifierRegistryData.toUndash();
-    }
+	public void log(Logger logger, String s, Object... params) {
+		tasksDone++;
+		logger.info("[" + tasksDone + "/" + totalTasks + "] " + s, params);
+	}
 
-    public void loadImageData(RegistryImageData dashImageData) {
-        images = dashImageData.toUndash();
-    }
+	public void apiReport(Logger logger) {
+		if (apiFailed.size() != 0) {
+			logger.error("Found incompatible objects that were not able to be serialized.");
+			AtomicInteger stage = new AtomicInteger();
+			apiFailed.entrySet().stream().sorted(Comparator.comparing(e -> e.getKey().getName())).forEach(entry -> {
+				stage.incrementAndGet();
+				logger.error("[" + entry.getValue().name() + "] Object: " + entry.getKey().getName());
+			});
+			logger.error("In total there are " + stage.get() + " incompatible objects. Please contact the mod developers to add support.");
+		}
+	}
 
 
-    public void loadModelData(RegistryModelData modelData) {
-        this.modelsToDeserialize = modelData.toUndash();
-    }
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final BlockState getBlockstate(final int pointer) {
+		return blockstates.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final Sprite getSprite(final int pointer) {
+		return sprites.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final Identifier getIdentifier(final int pointer) {
+		return identifiers.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final BakedModel getModel(final int pointer) {
+		return models.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final Font getFont(final int pointer) {
+		return fonts.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final NativeImage getImage(final int pointer) {
+		return images.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final Predicate<BlockState> getPredicate(final int pointer) {
+		return predicates.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final BakedQuad getBakedQuad(final int pointer) {
+		return bakedQuads.getObject(pointer);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#getObject(int)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final Pair<Property<?>, Comparable<?>> getProperty(final int propertyPointer, final int valuePointer) {
+		final Property<?> property = properties.getObject(propertyPointer);
+		final Comparable<?> value = propertyValues.getObject(valuePointer);
+		return Pair.of(property, value);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final int createBlockStatePointer(BlockState blockState) {
+		return blockstates.register(blockState);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final int createSpritePointer(final Sprite sprite) {
+		return sprites.register(sprite);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final int createImagePointer(final NativeImage image) {
+		return images.register(image);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final int createBakedQuadPointer(final BakedQuad quad) {
+		return bakedQuads.register(quad);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final int createIdentifierPointer(final Identifier identifier) {
+		return identifiers.register(identifier);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link AbstractRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final int createFontPointer(final Font font) {
+		return fonts.register(font);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2, Use the new method {@link FactoryRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final Integer createModelPointer(final BakedModel bakedModel) {
+		return models.register(bakedModel);
+	}
+
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2,
+	 * Use the new method {@link PredicateFactoryRegistryStorage#register(MultipartModelSelector, StateManager)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final int createPredicatePointer(final MultipartModelSelector selector, final StateManager<Block, BlockState> stateManager) {
+		return predicates.register(selector, stateManager);
+	}
 
 
-    public RegistryModelData getModels() {
-        Map<Integer, Pointer2ObjectMap<DashModel>> modelsToAdd = new HashMap<>();
-        for (Map.Entry<Integer, DashModel> entry : models.entrySet()) {
-            final DashModel value = entry.getValue();
-            modelsToAdd.computeIfAbsent(value.getStage(), Pointer2ObjectMap::new).put(entry.getKey(), value);
-        }
-        return new RegistryModelData(new Pointer2ObjectMap<>(modelsToAdd));
-    }
-
-
-    public int createBlockStatePointer(BlockState blockState) {
-        final int hash = blockState.hashCode();
-        if (blockstates.get(hash) == null) {
-            blockstates.put(hash, new DashBlockState(blockState, this));
-        }
-        return hash;
-    }
-
-    public final Integer createModelPointer(final BakedModel bakedModel) {
-        if (bakedModel == null) {
-            return null;
-        }
-        final int hash = bakedModel.hashCode();
-        if (models.get(hash) == null) {
-            FactoryConstructor factory = loader.getApi().modelMappings.get(bakedModel.getClass());
-            if (factory != null) {
-                models.put(hash, (DashModel) factory.createObject(bakedModel, this));
-            } else {
-                apiFailed.putIfAbsent(bakedModel.getClass(), FactoryType.MODEL);
-            }
-        }
-        return hash;
-    }
-
-    public final int createSpritePointer(final Sprite sprite) {
-        final int hash = sprite.hashCode();
-        if (sprites.get(hash) == null) {
-            sprites.put(hash, new DashSprite(sprite, this));
-        }
-        return hash;
-    }
-
-    public final int createIdentifierPointer(final Identifier identifier) {
-        final int hash = identifier.hashCode();
-        if (identifiers.get(hash) == null) {
-            if (identifier instanceof ModelIdentifier) {
-                identifiers.put(hash, new DashModelIdentifier((ModelIdentifier) identifier));
-            } else {
-                identifiers.put(hash, new DashIdentifier(identifier));
-            }
-        }
-        return hash;
-    }
-
-    public final int createImagePointer(final NativeImage image) {
-        final int hash = image.hashCode();
-        if (images.get(hash) == null) {
-            images.put(hash, new DashImage(image));
-        }
-        return hash;
-    }
-
-    public final int createPredicatePointer(final MultipartModelSelector selector, final StateManager<Block, BlockState> stateManager) {
-        final int hash = selector.hashCode();
-        if (predicates.get(hash) == null) {
-            predicates.put(hash, obtainPredicate(selector, stateManager));
-        }
-        return hash;
-    }
-
-    /**
-     * @param selector     The Original Object
-     * @param stateManager The StateManager that is bound to your multipart.
-     * @return A DashPredicate
-     */
-    public final DashPredicate obtainPredicate(final MultipartModelSelector selector, final StateManager<Block, BlockState> stateManager) {
-        final boolean isTrue = selector == MultipartModelSelector.TRUE;
-        if (selector == MultipartModelSelector.FALSE || isTrue) {
-            return new DashStaticPredicate(isTrue);
-        } else {
-            FactoryConstructor predicateFactory = loader.getApi().predicateMappings.get(selector.getClass());
-            if (predicateFactory != null) {
-                return (DashPredicate) predicateFactory.createObject(selector, this, stateManager);
-            } else {
-                apiFailed.putIfAbsent(selector.getClass(), FactoryType.PREDICATE);
-            }
-        }
-        return null;
-    }
-
-
-    public final int createFontPointer(final Font font) {
-        final int hash = font.hashCode();
-        if (fonts.get(hash) == null) {
-            FactoryConstructor fontFactory = loader.getApi().fontMappings.get(font.getClass());
-            if (fontFactory != null) {
-                fonts.put(hash, (DashFont) fontFactory.createObject(font, this));
-            } else {
-                apiFailed.putIfAbsent(font.getClass(), FactoryType.FONT);
-            }
-        }
-        return hash;
-    }
-
-    //TODO make this slightly less jank
-    public final Pair<Integer, Integer> createPropertyPointer(final Property<?> property, final Comparable<?> value) {
-        final int hashV = value.hashCode();
-        final int hashP = property.hashCode();
-        final boolean propVal = !propertyValues.containsKey(hashV);
-        final boolean prop = !properties.containsKey(hashP);
-        if (propVal || prop) {
-            DashProperty possibleProperty = null; // if value has an overwriten MethodHandle then this will make it skip the getting of the factory once.
-            if (prop) {
-                FactoryConstructor propFactory = loader.getApi().propertyMappings.get(property.getClass());
-                if (propFactory != null) {
-                    possibleProperty = properties.put(hashP, (DashProperty) propFactory.createObject(property, this, hashV));
-                } else {
-                    apiFailed.put(property.getClass(), FactoryType.PROPERTY);
-                    return Pair.of(hashP, hashV);
-                }
-            }
-
-            if (propVal) {
-                final FactoryConstructor factory = loader.getApi().propertyValueMappings.get(value.getClass());
-                if (factory != null) {
-                    propertyValues.put(hashV, (DashPropertyValue) factory.createObject(value, this, hashP));
-                } else {
-                    //gets the property again if it did not go through that time
-                    if (possibleProperty == null) {
-                        FactoryConstructor propFactory = loader.getApi().propertyMappings.get(property.getClass());
-                        if (propFactory != null) {
-                            possibleProperty = properties.put(hashP, (DashProperty) propFactory.createObject(property, this, hashV));
-                        } else {
-                            apiFailed.put(property.getClass(), FactoryType.PROPERTY);
-                            return Pair.of(hashP, hashV);
-                        }
-                    }
-
-                    //sees if it has an overwriten method handle.
-                    final FactoryConstructor forcedPropertyValue = possibleProperty.overrideMethodHandleForValue();
-                    if (forcedPropertyValue != null) {
-                        propertyValues.put(hashV, (DashPropertyValue) forcedPropertyValue.createObject(value, this, hashP));
-                    } else {
-                        apiFailed.put(value.getClass(), FactoryType.PROPERTY_VALUE);
-                    }
-                }
-            }
-        }
-        return Pair.of(hashP, hashV);
-    }
-
-
-    public final BlockState getBlockstate(final int pointer) {
-        return logIfNullThenReturn(blockstatesOut, pointer, "BlockState");
-    }
-
-    public final Sprite getSprite(final int pointer) {
-        return logIfNullThenReturn(spritesOut, pointer, "Sprite");
-    }
-
-    public final Identifier getIdentifier(final int pointer) {
-        return logIfNullThenReturn(identifiersOut, pointer, "Identifier");
-    }
-
-    public final BakedModel getModel(final int pointer) {
-        return logIfNullThenReturn(modelsOut, pointer, "BakedModel");
-    }
-
-    public final Font getFont(final int pointer) {
-        return logIfNullThenReturn(fontsOut, pointer, "Font");
-    }
-
-    public final NativeImage getImage(final int pointer) {
-        return logIfNullThenReturn(imagesOut, pointer, "NativeImage");
-    }
-
-    public final Predicate<BlockState> getPredicate(final int pointer) {
-        return logIfNullThenReturn(predicateOut, pointer, "Predicate");
-    }
-
-    public final Pair<Property<?>, Comparable<?>> getProperty(final int propertyPointer, final int valuePointer) {
-        final Property<?> property = propertiesOut.get(propertyPointer);
-        final Comparable<?> value = propertyValuesOut.get(valuePointer);
-        if (property == null || value == null) {
-            DashLoader.LOGGER.error("Property not found in data. PINTR: " + propertyPointer + "/" + valuePointer);
-        }
-        return Pair.of(property, value);
-    }
-
-
-    private <T> T logIfNullThenReturn(final Int2ObjectMap<T> map, final int ptr, final String typeStr) {
-        final T t = map.get(ptr);
-        if (t == null) {
-            //reified type parameters when?  - leocth
-            //DashLoader.LOGGER.error(T.class.getSimpleName() + " not found in data. PINTR: " + ptr);
-            DashLoader.LOGGER.error(typeStr + " not found in data. PINTR: " + ptr);
-        }
-        return t;
-    }
-
-    public void toUndash() {
-        Logger logger = LogManager.getLogger();
-        try {
-            tasksDone = 0;
-            totalTasks = 4 + modelsToDeserialize.size();
-            log(logger, "Loading Simple Objects");
-            identifiersOut = parallelToUndash(identifiers);
-            imagesOut = parallelToUndash(images);
-
-            log(logger, "Loading Properties");
-            propertiesOut = ThreadHelper.execParallel(properties, this);
-            propertyValuesOut = ThreadHelper.execParallel(propertyValues, this);
-            properties = null;
-            propertyValues = null;
-
-            log(logger, "Loading Advanced Objects");
-            blockstatesOut = parallelToUndash(blockstates);
-            predicateOut = parallelToUndash(predicates);
-            spritesOut = parallelToUndash(sprites);
-            fontsOut = parallelToUndash(fonts);
-
-            modelsOut = new Int2ObjectOpenHashMap<>((int) Math.ceil(modelsToDeserialize.size() / 0.75));
-            final short[] currentStage = {0};
-            modelsToDeserialize.forEach(modelCategory -> {
-                log(logger, "Loading " + modelCategory.size() + " Models: " + "[" + currentStage[0] + "]");
-                modelsOut.putAll(ThreadHelper.execParallel(modelCategory, this));
-                currentStage[0]++;
-            });
-            log(logger, "Applying Model Overrides");
-            modelsToDeserialize.forEach(modelcategory -> DashLoader.THREAD_POOL.invoke(new ThreadHelper.UndashTask.ApplyTask(new ArrayList<>(modelcategory.values()), 100, this)));
-            modelsToDeserialize = null;
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-
-    private <D extends Dashable<O>, O> Int2ObjectMap<O> parallelToUndash(Int2ObjectMap<D> in) {
-        final Int2ObjectMap<O> out = ThreadHelper.execParallel(in, this);
-        in.clear();
-        return out;
-    }
-
-    private void log(Logger logger, String s) {
-        tasksDone++;
-        logger.info("[" + tasksDone + "/" + totalTasks + "] " + s);
-    }
-
-    public void apiReport(Logger logger) {
-        if (apiFailed.size() != 0) {
-            logger.error("Found incompatible objects that were not able to be serialized.");
-            int[] ints = new int[1];
-            apiFailed.entrySet().stream().sorted(Comparator.comparing(e -> e.getValue().name)).forEach(entry -> {
-                ints[0]++;
-                logger.error("[" + entry.getValue().name() + "] Object: " + entry.getKey().getName());
-            });
-            logger.error("In total there are " + ints[0] + " incompatible objects. Please contact the mod developers to add support.");
-        }
-    }
-
-
+	/**
+	 * @apiNote Get the storages by accessing the registry field
+	 * @deprecated This has been Deprecated and will be removed in 2.2,
+	 * Properties and Comparables are now split.
+	 * Use the new method {@link FactoryRegistryStorage#register(Object)} instead.
+	 */
+	@Deprecated(since = "2.1", forRemoval = true)
+	public final Pair<Integer, Integer> createPropertyPointer(final Property<?> property, final Comparable<?> value) {
+		final int prop = properties.register(property);
+		final int val = propertyValues.register(value);
+		return Pair.of(prop, val);
+	}
 }

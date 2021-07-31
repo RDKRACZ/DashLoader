@@ -1,17 +1,15 @@
 package net.oskarstrom.dashloader.api;
 
+import io.activej.serializer.SerializerBuilder;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.metadata.CustomValue;
 import net.fabricmc.loader.api.metadata.ModMetadata;
-import net.minecraft.client.font.Font;
-import net.minecraft.client.render.model.BakedModel;
-import net.minecraft.client.render.model.json.MultipartModelSelector;
-import net.minecraft.state.property.Property;
+import net.oskarstrom.dashloader.DashException;
 import net.oskarstrom.dashloader.DashRegistry;
 import net.oskarstrom.dashloader.api.annotation.DashConstructor;
 import net.oskarstrom.dashloader.api.annotation.DashObject;
 import net.oskarstrom.dashloader.api.enums.ConstructorMode;
-import net.oskarstrom.dashloader.api.enums.FactoryType;
+import net.oskarstrom.dashloader.api.enums.DashDataType;
 import net.oskarstrom.dashloader.blockstate.property.DashBooleanProperty;
 import net.oskarstrom.dashloader.blockstate.property.DashDirectionProperty;
 import net.oskarstrom.dashloader.blockstate.property.DashEnumProperty;
@@ -36,208 +34,215 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.function.Consumer;
 
+@SuppressWarnings("removal")
 public class DashLoaderAPI {
-    public static final Logger LOGGER = LogManager.getLogger();
-    public static final Class<?>[] defaultParameters = new Class[]{DashRegistry.class};
+	public static final Logger LOGGER = LogManager.getLogger();
+	public static final Class<?>[] defaultParameters = new Class[]{DashRegistry.class};
 
-    public final Map<Class<? extends BakedModel>, FactoryConstructor> modelMappings;
-    public final Map<Class<? extends Property<?>>, FactoryConstructor> propertyMappings;
-    public final Map<Class<? extends Comparable<?>>, FactoryConstructor> propertyValueMappings;
-    public final Map<Class<? extends Font>, FactoryConstructor> fontMappings;
-    public final Map<Class<? extends MultipartModelSelector>, FactoryConstructor> predicateMappings;
-    public List<Class<?>> modelTypes;
-    public List<Class<?>> predicateTypes;
-    public List<Class<?>> fontTypes;
-    public List<Class<?>> propertyTypes;
-    public List<Class<?>> propertyValueTypes;
-    private boolean initialized = false;
+	public final Map<DashDataType, Map<Class<?>, FactoryConstructor>> mappings;
+	public final List<DashDataClass> dataClasses;
+	public Map<String, List<Class<?>>> types;
+	private boolean initialized = false;
+	private boolean failed = false;
 
-    public DashLoaderAPI() {
-        modelMappings = Collections.synchronizedMap(new HashMap<>());
-        propertyMappings = Collections.synchronizedMap(new HashMap<>());
-        propertyValueMappings = Collections.synchronizedMap(new HashMap<>());
-        predicateMappings = Collections.synchronizedMap(new HashMap<>());
-        fontMappings = Collections.synchronizedMap(new HashMap<>());
-        modelTypes = new ArrayList<>();
-        predicateTypes = new ArrayList<>();
-        fontTypes = new ArrayList<>();
-        propertyTypes = new ArrayList<>();
-        propertyValueTypes = new ArrayList<>();
-    }
+	public DashLoaderAPI() {
+		mappings = Collections.synchronizedMap(new HashMap<>());
+		types = Collections.synchronizedMap(new HashMap<>());
+		dataClasses = Collections.synchronizedList(new ArrayList<>());
+	}
 
-    public static FactoryConstructor createConstructor(Class<?> dashClass, Class<?> rawClass) throws NoSuchMethodException, IllegalAccessException {
-        final Constructor<?>[] constructors = dashClass.getConstructors();
-        for (Constructor<?> constructor : constructors) {
-            if (constructor.isAnnotationPresent(DashConstructor.class)) {
-                final DashConstructor[] dashConstructors = constructor.getAnnotationsByType(DashConstructor.class);
-                if (dashConstructors.length != 0) {
-                    final ConstructorMode value = dashConstructors[0].value();
-                    try {
-                        return FactoryConstructor.createConstructor(value, dashClass, rawClass);
-                    } catch (NoSuchMethodException e) {
-                        throw new NoSuchMethodException(value.getExpectedMethod(dashClass, rawClass));
-                    }
-                }
-            }
-        }
-        try {
-            return FactoryConstructor.createConstructor(ConstructorMode.DEFAULT_PARAMETERS, dashClass, rawClass);
-        } catch (NoSuchMethodException e) {
-            throw new NoSuchMethodException(ConstructorMode.DEFAULT_PARAMETERS.getExpectedMethod(dashClass, rawClass));
-        }
-    }
+	public static FactoryConstructor createConstructor(Class<?> dashClass, Class<?> rawClass, DashDataType dashDataType) throws NoSuchMethodException, IllegalAccessException {
+		for (ConstructorMode value : ConstructorMode.values()) {
+			try {
+				return FactoryConstructor.createConstructor(dashDataType, value, dashClass, rawClass);
+			} catch (NoSuchMethodException ignored) {
+			}
+		}
+		//TODO remove in 2.2
+		{
+			final Constructor<?>[] constructors = dashClass.getConstructors();
+			for (Constructor<?> constructor : constructors) {
+				if (constructor.isAnnotationPresent(DashConstructor.class)) {
+					final DashConstructor[] dashConstructors = constructor.getAnnotationsByType(DashConstructor.class);
+					if (dashConstructors.length != 0) {
+						final ConstructorMode value = dashConstructors[0].value();
+						try {
+							return FactoryConstructor.createConstructor(dashDataType, value, dashClass, rawClass);
+						} catch (NoSuchMethodException e) {
+							throw new NoSuchMethodException(value.getExpectedMethod(dashClass, rawClass));
+						}
+					}
+				}
+			}
+		}
+		throw new NoSuchMethodException(ConstructorMode.DEFAULT_PARAMETERS.getExpectedMethod(dashClass, rawClass));
+	}
 
-    private void clearAPI() {
-        modelMappings.clear();
-        propertyMappings.clear();
-        propertyValueMappings.clear();
-        fontMappings.clear();
-        predicateMappings.clear();
-        modelTypes.clear();
-        predicateTypes.clear();
-        fontTypes.clear();
-        propertyTypes.clear();
-        propertyValueTypes.clear();
-    }
+	private void clearAPI() {
+		mappings.clear();
+		types.clear();
+		dataClasses.clear();
+	}
 
-    @SuppressWarnings("unchecked")
-    private void addType(FactoryType type, Class<?> dashClass, Class<?> targetClass, FactoryConstructor constructor) {
-        switch (type) {
-            case PROPERTY_VALUE -> {
-                propertyValueTypes.add(dashClass);
-                propertyValueMappings.put((Class<? extends Comparable<?>>) targetClass, constructor);
-            }
-            case PROPERTY -> {
-                propertyTypes.add(dashClass);
-                propertyMappings.put((Class<? extends Property<?>>) targetClass, constructor);
-            }
-            case MODEL -> {
-                modelTypes.add(dashClass);
-                modelMappings.put((Class<? extends BakedModel>) targetClass, constructor);
-            }
-            case FONT -> {
-                fontTypes.add(dashClass);
-                fontMappings.put((Class<? extends Font>) targetClass, constructor);
-            }
-            case PREDICATE -> {
-                predicateTypes.add(dashClass);
-                predicateMappings.put((Class<? extends MultipartModelSelector>) targetClass, constructor);
-            }
-        }
-        LOGGER.info("Added custom DashObject: {} {}", type, dashClass.getSimpleName());
-    }
+	private void addType(DashDataType type, Class<?> dashClass) {
+		types.computeIfAbsent(type.toString(), integer -> new ArrayList<>()).add(dashClass);
+	}
 
-    private FactoryType getTypeFromFactoryInterface(Class<?> closs) {
-        for (FactoryType value : FactoryType.values()) {
-            if (value.factoryInterface == closs) {
-                return value;
-            }
-        }
-        LOGGER.error("Cannot find Factory Type from {} class parameter.", closs.getSimpleName());
-        return null;
-    }
-
-    public void registerDashObject(Class<?> closs) {
-        final Class<?>[] interfaces = closs.getInterfaces();
-        if (interfaces.length == 0) {
-            LOGGER.error("No Interfaces found. Class: {}", closs.getSimpleName());
-            return;
-        }
-        final DashObject annotation = closs.getDeclaredAnnotation(DashObject.class);
-        if (annotation == null) {
-            LOGGER.error("Custom DashObject implementation does not have DashObject Annotation. Class: {}", closs.getSimpleName());
-            return;
-        }
-        final FactoryType type;
-        final FactoryType factoryType = annotation.overrideType();
-        if (factoryType == FactoryType.DEFAULT) {
-            type = getTypeFromFactoryInterface(interfaces[0]);
-        } else {
-            type = factoryType;
-        }
-        if (type == null) {
-            LOGGER.error("Factory type could not be identified. Class: {}", closs.getSimpleName());
-            return;
-        }
-        for (Class<?> rawClass : annotation.value()) {
-            try {
-                addType(type, closs, rawClass, createConstructor(closs, rawClass));
-            } catch (NoSuchMethodException e) {
-                LOGGER.error("Constructor not matching/found. Expected: {}", e.getMessage());
-            } catch (IllegalAccessException e) {
-                LOGGER.error("Constructor not accessible in {}", closs.getSimpleName());
-            }
-        }
-    }
+	private void addFactoryToType(DashDataType type, Class<?> dashClass, Class<?> targetClass, FactoryConstructor constructor) {
+		addType(type, dashClass);
+		mappings.computeIfAbsent(type, type1 -> Collections.synchronizedMap(new HashMap<>())).put(targetClass, constructor);
+		LOGGER.info("Added custom DashObject: {} {}", type, dashClass.getSimpleName());
+	}
 
 
-    private void initNativeAPI() {
-        registerDashObject(DashBasicBakedModel.class);
-        registerDashObject(DashBuiltinBakedModel.class);
-        registerDashObject(DashMultipartBakedModel.class);
-        registerDashObject(DashWeightedBakedModel.class);
+	private void addDataObjectToType(DashDataType type, Class<?> dataClass) throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
+		addType(type, dataClass);
+		dataClasses.add((DashDataClass) dataClass.getDeclaredConstructor().newInstance());
+		LOGGER.info("Added custom DashDataObject: {}", dataClass.getSimpleName());
+	}
 
-        registerDashObject(DashAndPredicate.class);
-        registerDashObject(DashOrPredicate.class);
-        registerDashObject(DashSimplePredicate.class);
-        predicateTypes.add(DashStaticPredicate.class); // still cursed
+	public void applyTypes(SerializerBuilder builder, String internalString) {
+		final List<Class<?>> typeList = types.get(internalString);
+		if (typeList == null) {
+			LOGGER.error("Cannot find {} in typeMap", internalString);
+			failed = true;
+			return;
+		}
+		typeList.sort(Comparator.comparing(Class::getSimpleName));
+		builder.withSubclasses(internalString, typeList);
 
-        registerDashObject(DashBooleanProperty.class);
-        registerDashObject(DashDirectionProperty.class);
-        registerDashObject(DashEnumProperty.class);
-        registerDashObject(DashIntProperty.class);
+	}
 
-        registerDashObject(DashBooleanValue.class);
-        registerDashObject(DashDirectionValue.class);
-        registerDashObject(DashEnumValue.class);
-        registerDashObject(DashIntValue.class);
+	private DashDataType getTypeFromFactoryInterface(Class<?> closs) {
+		for (DashDataType value : DashDataType.values()) {
+			if (value.factoryInterface == closs) {
+				return value;
+			}
+		}
+		LOGGER.error("Cannot find Factory Type from {} class parameter.", closs.getSimpleName());
+		failed = true;
+		return null;
+	}
 
-        registerDashObject(DashBitmapFont.class);
-        registerDashObject(DashBlankFont.class);
-        registerDashObject(DashTrueTypeFont.class);
-        registerDashObject(DashUnicodeFont.class);
-    }
+	public void registerDashObject(Class<?> dashClass) {
+		final Class<?>[] interfaces = dashClass.getInterfaces();
+		if (interfaces.length == 0) {
+			LOGGER.error("No Interfaces found. Class: {}", dashClass.getSimpleName());
+			failed = true;
+			return;
+		}
+		final DashObject annotation = dashClass.getDeclaredAnnotation(DashObject.class);
+		if (annotation == null) {
+			LOGGER.error("Custom DashObject implementation does not have DashObject Annotation. Class: {}", dashClass.getSimpleName());
+			failed = true;
+			return;
+		}
+		DashDataType type = annotation.overrideType();
+		if (type == DashDataType.DEFAULT) {
+			type = getTypeFromFactoryInterface(interfaces[0]);
+		}
+		if (type == null) {
+			LOGGER.error("Factory type could not be identified. Class: {}", dashClass.getSimpleName());
+			failed = true;
+			return;
+		}
+		if (type.requiresTargetObject) {
+			if (annotation.value() == NullPointerException.class) {
+				LOGGER.error("The type {} requires a target object in the @DashObject annotation", type.name);
+				failed = true;
+				return;
+			}
+		}
+		if (type != DashDataType.DATA) {
+			final Class<?> rawClass = annotation.value();
+			try {
+				addFactoryToType(type, dashClass, rawClass, createConstructor(dashClass, rawClass, type));
+			} catch (NoSuchMethodException e) {
+				LOGGER.error("Constructor not matching/found. Expected: {}", e.getMessage());
+				failed = true;
+			} catch (IllegalAccessException e) {
+				LOGGER.error("Constructor not accessible in {}", dashClass.getSimpleName());
+				failed = true;
+			}
+		} else {
+			try {
+				addDataObjectToType(type, dashClass);
+			} catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
+				e.printStackTrace();
+				failed = true;
+			}
+		}
+	}
 
-    public void initAPI() {
-        if (!initialized) {
-            Instant start = Instant.now();
-            clearAPI();
-            initNativeAPI();
-            FabricLoader.getInstance().getAllMods().parallelStream().forEach(modContainer -> {
-                final ModMetadata metadata = modContainer.getMetadata();
-                processModData(metadata.getCustomValue("dashloader:customobject"), metadata);
-            });
-            sortTypes();
-            LOGGER.info("[" + Duration.between(start, Instant.now()).toMillis() + "ms] Initialized api.");
-            initialized = true;
-        }
-    }
 
-    private void sortTypes() {
-        modelTypes.sort(Comparator.comparing(Class::getSimpleName));
-        predicateTypes.sort(Comparator.comparing(Class::getSimpleName));
-        fontTypes.sort(Comparator.comparing(Class::getSimpleName));
-        propertyTypes.sort(Comparator.comparing(Class::getSimpleName));
-        propertyValueTypes.sort(Comparator.comparing(Class::getSimpleName));
-    }
+	private void initNativeAPI() {
+		registerDashObject(DashBasicBakedModel.class);
+		registerDashObject(DashBuiltinBakedModel.class);
+		registerDashObject(DashMultipartBakedModel.class);
+		registerDashObject(DashWeightedBakedModel.class);
 
-    private void processModData(CustomValue value, ModMetadata modMetadata) {
-        if (value != null) {
-            value.getAsArray().forEach(object -> {
-                final String dashObject = object.getAsString();
-                try {
-                    final Class<?> aClass = Class.forName(dashObject);
-                    registerDashObject(aClass);
-                } catch (ClassNotFoundException e) {
-                    LOGGER.error("Custom Dashable Object not found in mod {}. Value: {}", modMetadata.getId(), object);
-                }
-            });
-        }
-    }
+		registerDashObject(DashAndPredicate.class);
+		registerDashObject(DashOrPredicate.class);
+		registerDashObject(DashSimplePredicate.class);
+		addType(DashDataType.PREDICATE, DashStaticPredicate.class); // still cursed
+
+		registerDashObject(DashBooleanProperty.class);
+		registerDashObject(DashDirectionProperty.class);
+		registerDashObject(DashEnumProperty.class);
+		registerDashObject(DashIntProperty.class);
+
+		registerDashObject(DashBooleanValue.class);
+		registerDashObject(DashDirectionValue.class);
+		registerDashObject(DashEnumValue.class);
+		registerDashObject(DashIntValue.class);
+
+		registerDashObject(DashBitmapFont.class);
+		registerDashObject(DashBlankFont.class);
+		registerDashObject(DashTrueTypeFont.class);
+		registerDashObject(DashUnicodeFont.class);
+	}
+
+
+	public void initAPI() {
+		if (!initialized) {
+			Instant start = Instant.now();
+			clearAPI();
+			initNativeAPI();
+			FabricLoader.getInstance().getAllMods().forEach(modContainer -> {
+				final ModMetadata metadata = modContainer.getMetadata();
+				if (metadata.getCustomValues().size() != 0) {
+					applyForClassesInValue(metadata, "dashloader:customobject", this::registerDashObject);
+				}
+			});
+			if (failed) {
+				throw new DashException("Failed to initialize the API");
+			}
+			LOGGER.info("[" + Duration.between(start, Instant.now()).toMillis() + "ms] Initialized api.");
+			initialized = true;
+		}
+	}
+
+	private void applyForClassesInValue(ModMetadata modMetadata, String valueName, Consumer<Class<?>> func) {
+		CustomValue value = modMetadata.getCustomValue(valueName);
+		if (value != null) {
+			for (CustomValue customValue : value.getAsArray()) {
+				final String dashObject = customValue.getAsString();
+				try {
+					final Class<?> closs = Class.forName(dashObject);
+					func.accept(closs);
+				} catch (ClassNotFoundException e) {
+					LOGGER.error("Class not found, Mod: \"{}\", Value: \"{}\"", modMetadata.getId(), customValue.getAsString());
+					failed = true;
+				}
+			}
+		}
+	}
 
 
 }

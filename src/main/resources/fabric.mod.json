@@ -26,18 +26,20 @@
   ],
   "custom": {
     "sodium:options": {
-      "mixin.features.model": false
-    }
+      "mixin.features.model": false,
+      "mixin.features.shader": false
+    },
+    "dashloader:customobject": [
+      "net.oskarstrom.dashloader.api.EmptyDashData"
+    ]
   },
   "depends": {
     "fabricloader": ">=0.11.3",
-    "minecraft": "*"
+    "minecraft": ">=1.17"
   },
   "breaks": {
     "connected_block_textures": "*",
     "enhancedblockentities": "*",
-    "hydrogen": "*",
-    "lambdabettergrass": "*",
     "optifabric": "*",
     "sodium": "<=0.1.0"
   }

@@ -4,84 +4,61 @@ import io.activej.serializer.annotations.Deserialize;
 import io.activej.serializer.annotations.Serialize;
 import net.minecraft.state.property.EnumProperty;
 import net.minecraft.util.StringIdentifiable;
-import net.oskarstrom.dashloader.DashLoader;
 import net.oskarstrom.dashloader.DashRegistry;
-import net.oskarstrom.dashloader.api.FactoryConstructor;
-import net.oskarstrom.dashloader.api.annotation.DashConstructor;
 import net.oskarstrom.dashloader.api.annotation.DashObject;
-import net.oskarstrom.dashloader.api.enums.ConstructorMode;
+import net.oskarstrom.dashloader.util.ClassHelper;
 
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
 
 @DashObject(EnumProperty.class)
 public class DashEnumProperty implements DashProperty {
+	@Serialize(order = 0)
+	public final List<String> values;
+	@Serialize(order = 1)
+	public final String className;
+	@Serialize(order = 2)
+	public final String name;
 
-    private static final Map<String, Class> cache = new ConcurrentHashMap<>();
+	public Class<?> type;
 
-    @Serialize(order = 0)
-    public final List<String> values;
-    @Serialize(order = 1)
-    public final String className;
-    @Serialize(order = 2)
-    public final String name;
+	public DashEnumProperty(@Deserialize("values") List<String> values,
+							@Deserialize("className") String className,
+							@Deserialize("name") String name) {
+		this.values = values;
+		this.className = className;
+		this.name = name;
+	}
 
-    public Class<?> type;
+	public DashEnumProperty(EnumProperty property) {
+		className = property.getType().getName();
+		name = property.getName();
+		values = new ArrayList<>();
+		property.getValues().forEach(valuee -> values.add(valuee.toString()));
+	}
 
-    public DashEnumProperty(@Deserialize("values") List<String> values,
-                            @Deserialize("className") String className,
-                            @Deserialize("name") String name) {
-        this.values = values;
-        this.className = className;
-        this.name = name;
-    }
+	@Override
+	public EnumProperty<?> toUndash(DashRegistry registry) {
+		return get();
+	}
 
-    @DashConstructor(ConstructorMode.OBJECT)
-    public DashEnumProperty(EnumProperty property) {
-        className = property.getType().getName();
-        name = property.getName();
-        values = new ArrayList<>();
-        property.getValues().forEach(valuee -> values.add(valuee.toString()));
-    }
+	public <T extends Enum<T> & StringIdentifiable> EnumProperty<T> get() {
+		type = ClassHelper.getClass(className);
+		return EnumProperty.of(name, (Class<T>) type, Arrays.asList(((Class<T>) type).getEnumConstants()));
+	}
 
-    @Override
-    public EnumProperty<?> toUndash(DashRegistry registry) {
-        return get();
-    }
+	@Override
+	public boolean equals(Object o) {
+		if (this == o) return true;
+		if (o == null || getClass() != o.getClass()) return false;
+		DashEnumProperty that = (DashEnumProperty) o;
+		return Objects.equals(values, that.values) && Objects.equals(className, that.className) && Objects.equals(name, that.name);
+	}
 
-    public <T extends Enum<T> & StringIdentifiable> EnumProperty<T> get() {
-        type = getClass(className);
-        return EnumProperty.of(name, (Class<T>) type, Arrays.asList(((Class<T>) type).getEnumConstants()));
-    }
-
-    private Class getClass(final String className) {
-        final Class closs = cache.get(className);
-        if (closs != null) return closs;
-        try {
-            final Class clz = Class.forName(className);
-            cache.put(className, clz);
-            return clz;
-        } catch (Exception ignored) {
-        }
-        return null;
-    }
-
-
-    @Override
-    public FactoryConstructor overrideMethodHandleForValue() {
-        return DashLoader.getInstance().getApi().propertyValueMappings.get(Enum.class);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        DashEnumProperty that = (DashEnumProperty) o;
-        return Objects.equals(values, that.values) && Objects.equals(className, that.className) && Objects.equals(name, that.name);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(values, className, name);
-    }
+	@Override
+	public int hashCode() {
+		return Objects.hash(values, className, name);
+	}
 }
